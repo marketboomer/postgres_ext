@@ -1,5 +1,22 @@
 module ActiveRecord
+
+  module BuildArelWithExtension
+    def build_arel
+      arel = super
+
+      build_with(arel)
+
+      build_rank(arel, rank_value) if rank_value
+
+      arel
+    end
+  end
+
+
   module QueryMethods
+
+    prepend BuildArelWithExtension
+
     class WhereChain
       def overlap(opts, *rest)
         substitute_comparisons(opts, rest, Arel::Nodes::Overlap, 'overlap')
@@ -16,19 +33,19 @@ module ActiveRecord
       def contains(opts, *rest)
         build_where_chain(opts, rest) do |rel|
           case rel
-          when Arel::Nodes::In, Arel::Nodes::Equality
-            column = left_column(rel) || column_from_association(rel)
-            equality_for_hstore(rel) if column.type == :hstore
+            when Arel::Nodes::In, Arel::Nodes::Equality
+              column = left_column(rel) || column_from_association(rel)
+              equality_for_hstore(rel) if column.type == :hstore
 
-            if column.type == :hstore
-              Arel::Nodes::ContainsHStore.new(rel.left, rel.right)
-            elsif column.respond_to?(:array) && column.array
-              Arel::Nodes::ContainsArray.new(rel.left, rel.right)
+              if column.type == :hstore
+                Arel::Nodes::ContainsHStore.new(rel.left, rel.right)
+              elsif column.respond_to?(:array) && column.array
+                Arel::Nodes::ContainsArray.new(rel.left, rel.right)
+              else
+                Arel::Nodes::ContainsINet.new(rel.left, rel.right)
+              end
             else
-              Arel::Nodes::ContainsINet.new(rel.left, rel.right)
-            end
-          else
-            raise ArgumentError, "Invalid argument for .where.overlap(), got #{rel.class}"
+              raise ArgumentError, "Invalid argument for .where.overlap(), got #{rel.class}"
           end
         end
       end
@@ -36,19 +53,19 @@ module ActiveRecord
       def contained_in_array(opts, *rest)
         build_where_chain(opts, rest) do |rel|
           case rel
-          when Arel::Nodes::In, Arel::Nodes::Equality
-            column = left_column(rel) || column_from_association(rel)
-            equality_for_hstore(rel) if column.type == :hstore
+            when Arel::Nodes::In, Arel::Nodes::Equality
+              column = left_column(rel) || column_from_association(rel)
+              equality_for_hstore(rel) if column.type == :hstore
 
-            if column.type == :hstore
-              Arel::Nodes::ContainedInHStore.new(rel.left, rel.right)
-            elsif column.respond_to?(:array) && column.array
-              Arel::Nodes::ContainedInArray.new(rel.left, rel.right)
+              if column.type == :hstore
+                Arel::Nodes::ContainedInHStore.new(rel.left, rel.right)
+              elsif column.respond_to?(:array) && column.array
+                Arel::Nodes::ContainedInArray.new(rel.left, rel.right)
+              else
+                Arel::Nodes::ContainsINet.new(rel.left, rel.right)
+              end
             else
-              Arel::Nodes::ContainsINet.new(rel.left, rel.right)
-            end
-          else
-            raise ArgumentError, "Invalid argument for .where.overlap(), got #{rel.class}"
+              raise ArgumentError, "Invalid argument for .where.overlap(), got #{rel.class}"
           end
         end
       end
@@ -100,10 +117,10 @@ module ActiveRecord
       def substitute_comparisons(opts, rest, arel_node_class, method)
         build_where_chain(opts, rest) do |rel|
           case rel
-          when Arel::Nodes::In, Arel::Nodes::Equality
-            arel_node_class.new(rel.left, rel.right)
-          else
-            raise ArgumentError, "Invalid argument for .where.#{method}(), got #{rel.class}"
+            when Arel::Nodes::In, Arel::Nodes::Equality
+              arel_node_class.new(rel.left, rel.right)
+            else
+              raise ArgumentError, "Invalid argument for .where.#{method}(), got #{rel.class}"
           end
         end
       end
@@ -111,10 +128,10 @@ module ActiveRecord
       def equality_to_function(function_name, opts, rest)
         build_where_chain(opts, rest) do |rel|
           case rel
-          when Arel::Nodes::Equality
-            Arel::Nodes::Equality.new(rel.right, Arel::Nodes::NamedFunction.new(function_name, [rel.left]))
-          else
-            raise ArgumentError, "Invalid argument for .where.#{function_name.downcase}(), got #{rel.class}"
+            when Arel::Nodes::Equality
+              Arel::Nodes::Equality.new(rel.right, Arel::Nodes::NamedFunction.new(function_name, [rel.left]))
+            else
+              raise ArgumentError, "Invalid argument for .where.#{function_name.downcase}(), got #{rel.class}"
           end
         end
       end
@@ -154,7 +171,6 @@ module ActiveRecord
           raise ImmutableRelation if @loaded #   raise ImmutableRelation if @loaded
           @values[:#{name}] = value          #   @values[:readonly] = value
         end                                  # end
-
         def #{name}_value                    # def readonly_value
           @values[:#{name}]                  #   @values[:readonly]
         end                                  # end
@@ -189,33 +205,23 @@ module ActiveRecord
       self
     end
 
-    def build_arel_with_extensions
-      arel = build_arel_without_extensions
-
-      build_with(arel)
-
-      build_rank(arel, rank_value) if rank_value
-
-      arel
-    end
-
     def build_with(arel)
       with_statements = with_values.flat_map do |with_value|
         case with_value
-        when String
-          with_value
-        when Hash
-          with_value.map  do |name, expression|
-            case expression
-            when String
-              select = Arel::Nodes::SqlLiteral.new "(#{expression})"
-            when ActiveRecord::Relation, Arel::SelectManager
-              select = Arel::Nodes::SqlLiteral.new "(#{expression.to_sql})"
+          when String
+            with_value
+          when Hash
+            with_value.map  do |name, expression|
+              case expression
+                when String
+                  select = Arel::Nodes::SqlLiteral.new "(#{expression})"
+                when ActiveRecord::Relation, Arel::SelectManager
+                  select = Arel::Nodes::SqlLiteral.new "(#{expression.to_sql})"
+              end
+              Arel::Nodes::As.new Arel::Nodes::SqlLiteral.new("\"#{name.to_s}\""), select
             end
-            Arel::Nodes::As.new Arel::Nodes::SqlLiteral.new("\"#{name.to_s}\""), select
-          end
-        when Arel::Nodes::As
-          with_value
+          when Arel::Nodes::As
+            with_value
         end
       end
       unless with_statements.empty?
@@ -230,14 +236,14 @@ module ActiveRecord
     def build_rank(arel, rank_window_options)
       unless arel.projections.count == 1 && Arel::Nodes::Count === arel.projections.first
         rank_window = case rank_window_options
-                      when :order
-                        arel.orders
-                      when Symbol
-                        table[rank_window_options].asc
-                      when Hash
-                        rank_window_options.map { |field, dir| table[field].send(dir) }
-                      else
-                        Arel::Nodes::SqlLiteral.new "(#{rank_window_options})"
+                        when :order
+                          arel.orders
+                        when Symbol
+                          table[rank_window_options].asc
+                        when Hash
+                          rank_window_options.map { |field, dir| table[field].send(dir) }
+                        else
+                          Arel::Nodes::SqlLiteral.new "(#{rank_window_options})"
                       end
 
         unless rank_window.blank?
@@ -255,6 +261,5 @@ module ActiveRecord
       end
     end
 
-    alias_method_chain :build_arel, :extensions
   end
 end
